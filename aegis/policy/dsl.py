@@ -43,6 +43,11 @@ class OperatorPolicy:
     # recommending a full-fidelity checkpoint.
     max_consecutive_fallbacks: int = 10
 
+    # ---------------- Economics policy -----------------------------------
+    # High-level cost/correctness trade-off mode.
+    # Parsed from aegis.yaml economics.policy; also settable via aegis.policy.set().
+    economics_policy: str = "minimize_expected_cost"  # | "correctness_first" | "latency_first"
+
     # ---------------- Per-tier recovery budget (seconds) ------------------
     # Recovery must complete within this time budget.
     # Exceeding the budget is logged but does not currently abort the attempt.

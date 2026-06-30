@@ -88,6 +88,10 @@ class EscalationPolicyEngine:
         # Immutable audit log
         self._history: list[FaultRecord] = []
 
+        # observe_only: classify and log but do not call _route() or take
+        # any recovery action.  Set from aegis.init() when mode="observe_only".
+        self._observe_only: bool = False
+
         # Subscribe — EPE is the sole UTP consumer; FC/layers are called by EPE
         self._utp.subscribe(self._on_event)
 
@@ -129,6 +133,20 @@ class EscalationPolicyEngine:
             "[EPE] %s → %s (epoch %d, node %s, rank %d)",
             event.fault_signal.value, tier.name, epoch, event.node, event.rank,
         )
+
+        if self._observe_only:
+            # Log what we WOULD do but don't call _route() — no recovery action.
+            # History is still populated so aegis.explain() works.
+            logger.info(
+                "[EPE][observe_only] Would route %s → %s (epoch %d, node %s) — "
+                "no action taken",
+                event.fault_signal.value, tier.name, epoch, event.node,
+            )
+            record.result = RecoveryResult(
+                success=True, message="[observe_only] No action taken"
+            )
+            self._history.append(record)
+            return
 
         result = await self._route(record)
         record.result = result
