@@ -5,10 +5,18 @@ Each concrete layer owns one band of the blast-radius spectrum and must
 implement two coroutines:
 
   can_handle(event, tier) → bool  — quick pre-check (topology, checkpoint presence, …)
-  recover(event, tier, epoch) → RecoveryResult  — perform the actual recovery
+  recover(event, tier, epoch, *, min_valid_epoch=None) → RecoveryResult
 
 The EPE calls these in order, escalating to the next tier if can_handle
 returns False or recover returns success=False.
+
+``min_valid_epoch`` (§3.2 URC): the EPE computes this from
+``UnifiedRecoveryConsensus.agree()`` before calling storage-tier recovery,
+so a restore never picks a checkpoint newer than what surviving ranks have
+collectively validated.  ``None`` means URC had no data to gate with (e.g.
+no other ranks have reported yet) — layers must treat that as "no
+constraint", not as a failure, so the absence of consensus data never
+itself blocks recovery.  Transport/compute layers may ignore the parameter.
 """
 
 from __future__ import annotations
@@ -66,7 +74,12 @@ class RecoveryLayer(abc.ABC):
 
     @abc.abstractmethod
     async def recover(
-        self, event: TelemetryEvent, tier: BlastRadius, epoch: int
+        self,
+        event: TelemetryEvent,
+        tier: BlastRadius,
+        epoch: int,
+        *,
+        min_valid_epoch: int | None = None,
     ) -> RecoveryResult:
         """
         Attempt recovery for the given event at the given tier.

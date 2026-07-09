@@ -96,30 +96,38 @@ def restore(epoch: str | int = "latest_valid") -> dict:
 
     storage = rt.storage
 
-    # Stub: inspect available checkpoints and return the most recent
-    # In the real implementation this would drive URC consensus on the
-    # globally consistent checkpoint.
+    # Inspect available checkpoints and return the most recent.  In the
+    # real implementation this would drive URC consensus on the globally
+    # consistent checkpoint (see policy/engine.py's min_valid_epoch gating,
+    # which the EPE applies automatically during fault recovery — this
+    # explicit API is for operator-invoked restores outside a fault path).
 
-    if storage._tier3 is not None:
-        ckpt = storage._tier3
+    tier3_ckpt = storage.latest_tier3()
+    if tier3_ckpt is not None:
         logger.info(
             "[checkpoint] Restoring from Tier-3 (epoch=%d fidelity=%s)",
-            ckpt.epoch, ckpt.fidelity_flag,
+            tier3_ckpt.epoch, tier3_ckpt.fidelity_flag,
         )
         return {
             "tier": "remote",
-            "epoch": ckpt.epoch,
-            "fidelity_flag": ckpt.fidelity_flag,
+            "epoch": tier3_ckpt.epoch,
+            "fidelity_flag": tier3_ckpt.fidelity_flag,
         }
 
     # Fall through to tier2 / tier1 if available
-    for node, ckpt in storage._tier2.items():
+    for node in storage._tier2:
+        ckpt = storage.latest_tier2(node)
+        if ckpt is None:
+            continue
         logger.info(
             "[checkpoint] Restoring from Tier-2 node=%s (epoch=%d)", node, ckpt.epoch
         )
         return {"tier": "peer", "epoch": ckpt.epoch, "fidelity_flag": ckpt.fidelity_flag}
 
-    for node, ckpt in storage._tier1.items():
+    for node in storage._tier1:
+        ckpt = storage.latest_tier1(node)
+        if ckpt is None:
+            continue
         logger.info(
             "[checkpoint] Restoring from Tier-1 node=%s (epoch=%d)", node, ckpt.epoch
         )

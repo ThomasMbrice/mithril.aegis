@@ -2,8 +2,8 @@
 
 **Design Document — v0.1 (working draft)**
 Owner: Thomas
-Status: Pre-implementation design
-Last updated: 2026-06-29
+Status: Phase 0 implemented; Phase 1 not started; Phase 2 partially prototyped out of order (see §8.1)
+Last updated: 2026-07-08
 
 > Working codename **AEGIS** = *Adaptive, Escalating, Graded Infrastructure Survivability*. Rename later.
 
@@ -249,6 +249,30 @@ The three papers are the floor. These additions are where AEGIS becomes defensib
 - **Phase 1 (compose):** Wire B/C/D under EPE; build URC (highest research risk — do early); pass IT-1 through IT-6. *Goal: the composition actually works under simultaneous/correlated faults.*
 - **Phase 2 (economics):** E1–E4; ST-3 KPI measurement; produce the $/GPU-hour-saved number on a realistic trace. *Goal: the sales artifact exists and is real.*
 - **Phase 3 (moat):** §7 extensions — learned classifier, predictive pre-staging, straggler tier, inference path. *Goal: defensibility beyond the union of three papers.*
+
+### 8.1 Actual status vs. this plan (as of 2026-07-08)
+
+The phase order above is the *intended* build order. Reality has diverged from it —
+recorded here so this doc doesn't go stale the way `CLAUDE.md`'s phase table did.
+Verify against the repo directly (test count, `bench/` contents) before trusting
+this table for anything more than orientation; it will drift again.
+
+| Phase | Planned scope | Actual state |
+|-------|---------------|--------------|
+| **Phase 0** | A1–A3, chaos-inject, EPE stub, UT-B/C/D reproductions | **Done, and grown past its original scope.** `aegis/` has UTP, FC, epoch service, EPE, and stub B/C/D layers exactly as specified. Test suite has grown from the original 59 tests to **138**, and integration coverage now runs **IT-1 through IT-7** (an IT-7 "transparency contract" test exists that predates any mention of it in this doc or `CLAUDE.md`). All recovery layers remain stubs — no real NCCL, GPU, or checkpoint I/O; the only sensor is `SyntheticSensor`. |
+| **Phase 1** | Wire real R²CCL/MeCeFO/TierCheck under EPE; build real URC; pass IT-1–IT-6 under simultaneous/correlated faults | **Software-realistic composition done; hardware validation pending.** All three layers now do genuine work instead of `asyncio.sleep(0)`: `layers/transport.py` runs a real NIC migration state machine and real R2CC-Balance bandwidth-redistribution math on a pluggable `TransportBackend` (default `SimulatedTransportBackend`; hardware-pending `LinuxRDMABackend` stubbed for the IB cluster). `layers/compute.py` runs real MeCeFO tensor math via torch — truncated-SVD low-rank approximation, skip-connection pass-through, selective FFN recompute — device-agnostic (CUDA on the A100 cluster, MPS/CPU here) via `TorchMeCeFOBackend`. `layers/storage.py` does real file I/O: base+differential checkpoints (XOR-diff, zlib-compressed), SHA-256 integrity verification, and measured wall-clock timing, on a pluggable `CheckpointBackend` (peer/remote tiers are local directories standing in for a real peer node and S3/Lustre — `RemoteObjectStoreBackend` is a documented `NotImplementedError` extension point, not yet wired). `consensus/urc.py`'s epoch-reduction logic is now genuinely exercised: the EPE calls `report_epoch()` after every successful recovery and gates B2–B4 restores on `agree()`'s `min_valid_epoch` (see `policy/engine.py::_urc_gate`), so URC reconciles real cross-layer state instead of having nothing to reduce over. IT-1–IT-7 and 27 new unit tests (`test_transport_layer.py`, `test_compute_layer.py`, `test_storage_layer.py`, `test_urc_wiring.py`) pass — 165 tests total. **What's still hardware-pending, not yet done:** no real NCCL interception shim, no real RDMA/IB migration (`LinuxRDMABackend` untested — no RNICs on the dev machine), no real 8×A100 training job reproducing MeCeFO's 4.18% or R²CCL's <1%/<3%/85–89% numbers, no real S3/Lustre client, no TorchFT integration. This is real software composition validated on CPU/MPS; the A100-cluster hardware validation described in `eval_design.md`/`test_suite.md` §4.5 is the next gate. |
+| **Phase 2** | E1–E4 policy/cost plane; ST-1–ST-3 KPI measurement on a realistic trace | **Partially prototyped, ahead of Phase 1.** A full benchmark framework now exists at `bench/` (not referenced elsewhere in this doc) — a `SimulationEngine`, fault traces (per-tier isolation + Poisson/burst/production mixed traces), a cost model, and system adapters for **AEGIS, TorchFT, R²CCL, MeCeFO, TierCheck, and a vanilla checkpoint-restart baseline**. Only the AEGIS adapter drives the real runtime (`AegisRuntime` + `ChaosHarness` + EPE audit log); the other five adapters are fixed cost-table simulations, not real integrations of those systems. The evaluation methodology this implements is specified in a companion doc, **`test_suite.md`**, which also names the target real-hardware cluster (SeaWulf's A100 partition) that Phase 1's "real cluster" validation is meant to run on — but no cluster driver (Slurm scripts, etc.) exists yet, so that half of `test_suite.md` is still design, not code. `eval_design.md` extends this further into a real-inference (GPT-OSS/GLM) evaluation, still pending your answers to its open items. |
+| **Phase 3** | Learned classifier, predictive pre-staging, straggler tier, inference path | **Not started.** |
+
+**Net effect:** the project did not follow its own build order, but Phase 1 has
+now landed out of order alongside Phase 2's scaffolding. The `bench/` $/GPU-hr
+numbers are still simulated for five of six systems compared, and the AEGIS
+adapter's recovery-time numbers now come from software-realistic (not
+hardware-measured) transport/compute/storage math rather than an instant
+stub — a step closer to credible, but still not the hardware-grounded number
+`ST-3` intends. The actual remaining blocker to that number is real A100/IB
+cluster validation (`eval_design.md`/`test_suite.md` §4.5), not more software
+composition — that part is now built.
 
 ---
 

@@ -220,8 +220,16 @@ class EscalationPolicyEngine:
                         record.escalated = True
                     record.final_tier = tier
 
-                    result = await layer.recover(record.event, tier, record.epoch)
+                    min_valid_epoch = self._urc_gate(record, tier)
+                    result = await layer.recover(
+                        record.event, tier, record.epoch,
+                        min_valid_epoch=min_valid_epoch,
+                    )
                     if result.success:
+                        # This rank's logical slot has now committed state
+                        # at this epoch — real cross-layer input for the
+                        # next fault's URC reduction (§3.2).
+                        self._consensus.report_epoch(record.event.rank, record.epoch)
                         return result
 
                     logger.warning(
@@ -249,6 +257,25 @@ class EscalationPolicyEngine:
                 f"at epoch {record.epoch}"
             ),
         )
+
+    def _urc_gate(self, record: FaultRecord, tier: BlastRadius) -> int | None:
+        """
+        Compute the URC-derived ``min_valid_epoch`` for a storage-tier
+        restore (§3.2).  Only storage tiers (B2-B4) consult consensus —
+        transport/compute recoveries don't restore checkpointed state, so
+        there's nothing to gate.
+
+        Returns None (no constraint) if URC has no surviving-rank data to
+        reduce over yet — absence of consensus data must never itself
+        block recovery (§5 transparency promise #5: fail-safe, not
+        fail-active).
+        """
+        if tier < BlastRadius.B2:
+            return None
+
+        active_ranks = [r for r in self._consensus.all_ranks() if r != record.event.rank]
+        decision = self._consensus.agree(active_ranks, record.epoch)
+        return decision.min_valid_epoch if decision.agreed else None
 
     # ------------------------------------------------------------------
     # Audit
