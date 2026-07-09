@@ -278,7 +278,9 @@ class ComputeLayer(RecoveryLayer):
             f"Neighbor {neighbor} absorbing {event.node} (fallback #{count}, "
             f"low-rank rel-error={result.low_rank_relative_error:.4f})"
         )
-        return RecoveryResult(success=True, message=msg, degraded=True)
+        return RecoveryResult(
+            success=True, message=msg, degraded=True, recovery_secs=result.elapsed_secs
+        )
 
     def register_neighbor(self, node: str, neighbor: str) -> None:
         """Register that *neighbor* can absorb *node*'s workload."""

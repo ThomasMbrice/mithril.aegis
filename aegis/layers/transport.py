@@ -304,6 +304,7 @@ class TransportLayer(RecoveryLayer):
                 f"({result.throughput_retained_pct:.1f}% throughput retained)"
             ),
             degraded=False,
+            recovery_secs=result.migration_secs,
         )
 
     # ------------------------------------------------------------------

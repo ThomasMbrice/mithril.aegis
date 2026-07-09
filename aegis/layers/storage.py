@@ -300,6 +300,7 @@ class StorageLayer(RecoveryLayer):
         return RecoveryResult(
             success=True,
             message=f"Tier-1 restored {event.node} from epoch {ckpt.epoch} ({len(payload)} bytes, checksum verified)",
+            recovery_secs=elapsed,
         )
 
     def _restore_tier2(self, event: TelemetryEvent, min_valid_epoch: int | None) -> RecoveryResult:
@@ -324,6 +325,7 @@ class StorageLayer(RecoveryLayer):
         return RecoveryResult(
             success=True,
             message=f"Tier-2 restored {event.node} from peer replica (epoch {ckpt.epoch}, checksum verified)",
+            recovery_secs=elapsed,
         )
 
     def _restore_tier3(self, min_valid_epoch: int | None) -> RecoveryResult:
@@ -348,6 +350,7 @@ class StorageLayer(RecoveryLayer):
         return RecoveryResult(
             success=True,
             message=f"Tier-3 restored from remote base (epoch {ckpt.epoch}, checksum verified)",
+            recovery_secs=elapsed,
         )
 
     # ------------------------------------------------------------------

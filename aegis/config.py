@@ -11,6 +11,7 @@ Field mapping (YAML path → OperatorPolicy attribute):
   tiers.b0_transport.fast_path          → allow_b0_fast_path
   tiers.b1_compute.max_consecutive_fallbacks → max_consecutive_fallbacks
   economics.policy                      → economics_policy
+  cluster.gpu_count                     → gpu_count
 """
 
 from __future__ import annotations
@@ -110,6 +111,11 @@ def _parse_policy(raw: dict[str, Any]) -> OperatorPolicy:
     val = _get_nested(raw, "tiers", "b1_compute", "max_consecutive_fallbacks")
     if val is not None:
         policy.max_consecutive_fallbacks = int(val)
+
+    # cluster.gpu_count → gpu_count (KPI meter's per-fault GPU-hours multiplier)
+    val = _get_nested(raw, "cluster", "gpu_count")
+    if val is not None:
+        policy.gpu_count = int(val)
 
     logger.debug("[AEGIS] Loaded policy: %r", policy)
     return policy

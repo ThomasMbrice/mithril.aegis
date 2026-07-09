@@ -71,6 +71,7 @@ class AegisRuntime:
             consensus=self.consensus,
             policy=policy,
             layers=[self.transport, self.compute, self.storage],
+            kpi=self.kpi,
         )
 
         # Synthetic sensor for testing / chaos injection

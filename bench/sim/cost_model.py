@@ -11,6 +11,16 @@ Sources:
   - MeCeFO: neighbor-absorb ~30s (paper: 4.18% overhead target)
   - TierCheck: T1 <10s, T2 <60s, T3 <300s
   - TorchFT: elastic training, handles all tiers but slower than composed AEGIS
+
+These are deliberately *target* recovery times (what the papers/product
+spec claim), used to drive the simulator's per-tier cost model for ST-3
+trace-level $/GPU-hr projection. This is a different quantity from
+``aegis/kpi.py``'s live ``KPIMeter``, which records each fault's real
+*measured* ``recovery_secs`` from the actual runtime — on real A100/IB
+hardware those two should converge (that convergence, i.e. calibration
+error, is the real↔sim bridge test_suite.md §5.3 describes); on this dev
+machine they don't, because the live runtime has no GPU cluster to
+measure against. Don't substitute one for the other without that context.
 """
 
 from __future__ import annotations

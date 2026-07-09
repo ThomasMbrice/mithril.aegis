@@ -26,6 +26,11 @@ class OperatorPolicy:
     # $/GPU/hr benchmark (H100 on-demand pricing, per §5.3 ST-3)
     gpu_hr_cost: float = 2.35
 
+    # Job-wide GPU count — the multiplier the KPI meter (E3) uses to turn a
+    # per-fault recovery_secs into GPU-hours saved (§5 kpi.py). Defaults to
+    # 8, matching MeCeFO's own W1 testbed (design.md workload table).
+    gpu_count: int = 8
+
     # ---------------- B0 fast-path ----------------------------------------
     # Allow R²CCL to begin NIC migration before the FC completes classification
     # (§3.1 mitigation: transport may act in ms–s and report concurrently)

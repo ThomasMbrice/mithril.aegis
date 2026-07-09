@@ -33,24 +33,35 @@ class RecoveryResult:
     ``degraded=True`` means the layer completed recovery but the model
     state is approximate (MeCeFO fallback active).  Downstream components
     must surface this via checkpoint fidelity_flag (§3.4).
+
+    ``recovery_secs`` is the real, measured wall-clock cost of this specific
+    recovery (NIC migration time, MeCeFO absorb time, checkpoint restore
+    time — whatever the layer actually clocked), 0.0 on failure.  The EPE
+    feeds this to ``KPIMeter.record()`` (§4 Layer E3) — per test_suite.md
+    §4.5.4, "wasted_GPU_hours is measured, not modeled." On this dev
+    machine (no GPU cluster) these are real CPU/MPS-proxy timings, not
+    real hardware recovery durations — see design.md §8.1.
     """
 
-    __slots__ = ("success", "message", "degraded")
+    __slots__ = ("success", "message", "degraded", "recovery_secs")
 
     def __init__(
         self,
         success: bool,
         message: str = "",
         degraded: bool = False,
+        recovery_secs: float = 0.0,
     ) -> None:
         self.success = success
         self.message = message
         self.degraded = degraded
+        self.recovery_secs = recovery_secs
 
     def __repr__(self) -> str:
         return (
             f"RecoveryResult(success={self.success}, "
-            f"degraded={self.degraded}, message={self.message!r})"
+            f"degraded={self.degraded}, recovery_secs={self.recovery_secs:.6f}, "
+            f"message={self.message!r})"
         )
 
 

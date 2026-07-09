@@ -74,9 +74,16 @@ version and verify against the repo before trusting either.
   real RDMA/IB migration, real S3/Lustre backend, real A100 training-job
   reproduction of the papers' numbers, TorchFT integration — all hardware/
   infra-pending, see `eval_design.md` / `test_suite.md` §4.5 for the plan.
-- **Phase 2:** E1–E4 cost/policy plane; ST-3 $/GPU-hr-saved measurement.
-  `bench/` scaffolding exists (adapters, traces, cost model, sim engine) but
-  most of it simulates rather than measures — see design.md §8.1.
+- **Phase 2 (done at software/simulation level):** E3 KPI meter is now
+  wired — `policy/engine.py` calls `KPIMeter.record()` automatically after
+  every successful recovery with real measured `recovery_secs` (proxy
+  timing on this dev machine, not hardware). E4 dashboard added:
+  `aegis.dashboard(fmt="text"|"json")` (`aegis/dashboard.py`), no daemon.
+  ST-3: `bench/run_st3.py` runs the full 6-system matrix on FT-PRODUCTION
+  across W1/W2/W3 and writes `bench/reports/ft_production_report.md` — see
+  `progress.md` for exact commands. All six systems' recovery-time inputs
+  there are still target cost-table numbers, not hardware-measured — see
+  design.md §8.1.
 - **Phase 3 (deferred, not started):** Learned classifier, predictive
   pre-staging, straggler tier (B-1), inference path.
 
