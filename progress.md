@@ -114,3 +114,58 @@ needs the real A100/IB cluster run described in `eval_design.md` /
 
 Next gate for a credible $/GPU-hr number: real A100/IB cluster validation
 per `eval_design.md` / `test_suite.md` §4.5 — not more software work.
+
+## Real-cluster harness (`realbench/` + `chaos_inject/real_injector.py`)
+
+Built and smoke-tested locally (CPU/gloo, `--tiny` toy model, world_size up
+to 2) — **not yet run on SeaWulf**. Confirmed for this allocation: 8xA100
+single node, single NIC/plane (B0 stays sim-only per §4.5.5), no confirmed
+DCGM (nvidia-smi fallback only, no tensor-active signal).
+
+- `realbench/training/w1_llama7b.py` — real LLaMA-7B-shaped model
+  (`transformers`, random init, DP(FSDP) on CUDA), real `aegis.init()`
+  wiring, real step/heartbeat logging. Launched via the existing `aegis
+  run` (torchrun) for Phase 0.
+- `realbench/sensors/rank_heartbeat.py` — the first real (non-synthetic)
+  AEGIS sensor: peer heartbeat-file polling → real `TelemetryEvent` on the
+  live UTP.
+- `chaos_inject/real_injector.py` — standalone process, real `SIGKILL` of a
+  target rank at a fixed step (separate mechanism from the existing
+  in-process `ChaosHarness`, which stays synthetic-only).
+- `realbench/collector/{gpu_sampler,align}.py` — nvidia-smi sampler +
+  §4.5.4 alignment (`recovery_gap`/`idle_gpus_by_util_proxy`/
+  `wasted_gpu_hours`), with the DCGM-vs-nvidia-smi caveat enforced in the
+  field names, not just prose.
+- `realbench/phase0_trust_anchor/` and `realbench/phase1_per_tier/` —
+  orchestration + report generation for the two phases test_suite.md §8
+  mandates be run in order; Phase 1 refuses to run without a passing
+  Phase 0 report (`--skip-gate` overrides for debugging only).
+- `realbench/slurm/` — `sbatch_phase0.sh` / `sbatch_phase1_b1.sh`, headers
+  styled after a known-working SeaWulf training script (module load python,
+  `pip install torch` from the cu121 index + `pip install -e .`, OMP_*/
+  TORCHDYNAMO_DISABLE env vars, `srun --cpu-bind=cores`). `--partition`
+  and `--cpus-per-task`/`--mem` in the header are placeholders to edit
+  before submitting; the A100 cost rate is passed via `sbatch
+  --export=A100_SPOT_USD_PER_HR=...` at submission time.
+
+**Real finding from local validation, not a guess:** training for Phase 1
+is launched as independent per-rank OS processes, not via `aegis run`/
+torchrun — torchrun's elastic agent tears down every surviving rank the
+instant one dies, which would defeat B1 testing entirely. Phase 0 (nothing
+dies there) still uses `aegis run` normally.
+
+**Known limitation surfaced by real testing, documented in every report,
+not hidden:** this build's `ComputeLayer.recover()` does real (proxy-
+tensor) MeCeFO absorb math and is genuinely measured, but does not
+reconfigure the `torch.distributed` process group — so after a real B1
+kill, training halts rather than resumes. `recovery_gap`/`wasted_gpu_hours`
+are therefore not yet end-to-end measurable; what IS real and reported is
+detection latency and absorb compute time. Wiring real process-group
+reconfiguration (and a B-VANILLA checkpoint-restart baseline, and a
+TorchFT condition) are the natural next steps once this lands on SeaWulf.
+
+To run for real: edit the `--partition`/`--cpus-per-task`/`--mem` placeholders
+in both sbatch headers for SeaWulf's actual node spec, then
+`sbatch realbench/slurm/sbatch_phase0.sh`, confirm `phase0_report.md`
+PASSes, then `sbatch --export=A100_SPOT_USD_PER_HR=<rate>
+realbench/slurm/sbatch_phase1_b1.sh <phase0_out_dir>`.
