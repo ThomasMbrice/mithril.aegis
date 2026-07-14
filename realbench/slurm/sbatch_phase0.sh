@@ -6,15 +6,15 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
 #SBATCH --mem=256G
-#SBATCH --gres=gpu:8
+#SBATCH --gres=gpu:4
 #SBATCH --time=4:00:00
 #SBATCH --output=logs/phase0_%j.out
 #SBATCH --error=logs/phase0_%j.err
 #
-# EDIT the header above before submitting: --partition (SeaWulf's A100
-# partition name — a100-large is a placeholder), --cpus-per-task/--mem
-# (sized here for an 8xA100 node at ~8 cores/64GB per GPU; match the
-# actual node spec), --time (6000 steps x N=3 repeats x 2 conditions).
+# Sized to the a100-large queue's per-job cap: 64 cores / 256G mem / 4 GPUs /
+# 1 node, max runtime 8h, max 1 job at a time for this account — do not raise
+# --gres/--cpus-per-task/--mem/--nodes above those, and do not submit this
+# alongside another a100-large job (Max Jobs=1 will reject/queue it).
 #
 # --output/--error are relative to wherever `sbatch` is invoked from
 # (SLURM opens them at job START, before this script's own `mkdir -p logs`
@@ -23,7 +23,7 @@
 # submit from the repo root, per Usage below.
 #
 # Phase 0 — trust-anchor (test_suite.md §7/§8). W1 (LLaMA-7B), single node,
-# 8xA100, NO fault injection: control vs AEGIS-on steady-state overhead.
+# 4xA100, NO fault injection: control vs AEGIS-on steady-state overhead.
 # MUST pass before submitting sbatch_phase1_b1.sh.
 #
 # Usage (from the repo root): sbatch realbench/slurm/sbatch_phase0.sh [OUT_DIR]
@@ -55,7 +55,7 @@ srun --cpu-bind=cores python -m realbench.phase0_trust_anchor.run_phase0 \
     --out "$OUT_DIR" \
     --steps 6000 \
     --repeat 3 \
-    --nproc-per-node 8
+    --nproc-per-node 4
 
 set +e
 srun --cpu-bind=cores python -m realbench.phase0_trust_anchor.report_phase0 \

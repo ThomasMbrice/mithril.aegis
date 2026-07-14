@@ -6,22 +6,22 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
 #SBATCH --mem=256G
-#SBATCH --gres=gpu:8
+#SBATCH --gres=gpu:4
 #SBATCH --time=2:00:00
 #SBATCH --output=logs/phase1_b1_%j.out
 #SBATCH --error=logs/phase1_b1_%j.err
 #
-# EDIT the header above before submitting — see sbatch_phase0.sh's header
-# comment (same placeholders: --partition, --cpus-per-task/--mem, and the
-# same --output/--error-needs-logs/-to-already-exist note — submit from
-# the repo root, which already checks in logs/.gitkeep).
+# Sized to the a100-large queue's per-job cap — see sbatch_phase0.sh's
+# header comment (64 cores / 256G mem / 4 GPUs / 1 node, max runtime 8h,
+# max 1 concurrent job for this account; --output/--error need logs/ to
+# already exist — submit from the repo root, which checks in logs/.gitkeep).
 #
 # Phase 1 — real B1 fault injection (test_suite.md §4.5). Requires a
 # PASSING Phase 0 report — this script refuses to run otherwise (enforced
 # inside realbench.phase1_per_tier.report_phase1, not just here).
 #
 # This single SLURM task runs realbench.phase1_per_tier.report_phase1,
-# which itself spawns the 8 rank processes, the real fault injector, and
+# which itself spawns the 4 rank processes, the real fault injector, and
 # the GPU sampler as independent local subprocesses on this one node — see
 # that module's docstring for why this is NOT `aegis run`/torchrun here
 # (torchrun's elastic agent would tear down survivors the instant the
@@ -65,7 +65,7 @@ srun --cpu-bind=cores python -m realbench.phase1_per_tier.report_phase1 \
     --phase0-dir "$PHASE0_DIR" \
     --steps 20000 \
     --warmup-secs 120 \
-    --nproc-per-node 8 \
+    --nproc-per-node 4 \
     --gpu-hr-cost-usd "$A100_SPOT_USD_PER_HR"
 
 echo "[sbatch_phase1_b1] done — see $OUT_DIR/phase1_report.md"
