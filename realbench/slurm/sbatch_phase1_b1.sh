@@ -37,6 +37,7 @@ export OMP_NUM_THREADS=1
 export OMP_PLACES=threads
 export OMP_PROC_BIND=spread
 export TORCHDYNAMO_DISABLE=1
+export PATH="$HOME/.local/bin:$PATH"
 
 mkdir -p logs
 
