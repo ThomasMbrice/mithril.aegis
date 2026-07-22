@@ -7,6 +7,7 @@
 #SBATCH --cpus-per-task=64
 #SBATCH --mem=256G
 #SBATCH --gres=gpu:4
+#SBATCH --exclusive
 #SBATCH --time=4:00:00
 #SBATCH --output=logs/phase0_%j.out
 #SBATCH --error=logs/phase0_%j.err
