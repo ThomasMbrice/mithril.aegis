@@ -18,12 +18,39 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
 
 CONDITIONS = ("control", "aegis")
+
+
+def _run_and_reap(cmd: list[str], timeout: float) -> bool:
+    """Run cmd in its own process group and force-kill the whole group after it exits.
+
+    torchrun's elastic agent SIGTERMs surviving ranks on a crash (e.g. one rank
+    OOMs) but doesn't guarantee they actually die — a rank stuck in a CUDA
+    driver call can outlive the SIGTERM and the torchrun launcher can return
+    anyway, leaving an orphaned rank process still holding GPU memory for
+    every subsequent sub-run in this job. start_new_session + killpg on exit
+    guarantees cleanup regardless of what torchrun's own teardown did.
+    """
+    proc = subprocess.Popen(cmd, start_new_session=True)
+    pgid = os.getpgid(proc.pid)
+    try:
+        returncode = proc.wait(timeout=timeout)
+        ok = returncode == 0
+    except subprocess.TimeoutExpired:
+        ok = False
+    finally:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    return ok
 
 
 def build_cmd(
@@ -88,11 +115,7 @@ def main() -> None:
             )
             print(f"[run_phase0] {condition} run{i}: {' '.join(cmd)}", flush=True)
             start = time.time()
-            try:
-                result = subprocess.run(cmd, timeout=args.run_timeout_secs)
-                ok = result.returncode == 0
-            except subprocess.TimeoutExpired:
-                ok = False
+            ok = _run_and_reap(cmd, args.run_timeout_secs)
             elapsed = time.time() - start
             run_index.append({
                 "condition": condition, "run": i, "log_dir": str(run_dir),
