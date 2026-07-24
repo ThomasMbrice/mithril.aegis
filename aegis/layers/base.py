@@ -5,10 +5,18 @@ Each concrete layer owns one band of the blast-radius spectrum and must
 implement two coroutines:
 
   can_handle(event, tier) → bool  — quick pre-check (topology, checkpoint presence, …)
-  recover(event, tier, epoch) → RecoveryResult  — perform the actual recovery
+  recover(event, tier, epoch, *, min_valid_epoch=None) → RecoveryResult
 
 The EPE calls these in order, escalating to the next tier if can_handle
 returns False or recover returns success=False.
+
+``min_valid_epoch`` (§3.2 URC): the EPE computes this from
+``UnifiedRecoveryConsensus.agree()`` before calling storage-tier recovery,
+so a restore never picks a checkpoint newer than what surviving ranks have
+collectively validated.  ``None`` means URC had no data to gate with (e.g.
+no other ranks have reported yet) — layers must treat that as "no
+constraint", not as a failure, so the absence of consensus data never
+itself blocks recovery.  Transport/compute layers may ignore the parameter.
 """
 
 from __future__ import annotations
@@ -25,24 +33,35 @@ class RecoveryResult:
     ``degraded=True`` means the layer completed recovery but the model
     state is approximate (MeCeFO fallback active).  Downstream components
     must surface this via checkpoint fidelity_flag (§3.4).
+
+    ``recovery_secs`` is the real, measured wall-clock cost of this specific
+    recovery (NIC migration time, MeCeFO absorb time, checkpoint restore
+    time — whatever the layer actually clocked), 0.0 on failure.  The EPE
+    feeds this to ``KPIMeter.record()`` (§4 Layer E3) — per test_suite.md
+    §4.5.4, "wasted_GPU_hours is measured, not modeled." On this dev
+    machine (no GPU cluster) these are real CPU/MPS-proxy timings, not
+    real hardware recovery durations — see design.md §8.1.
     """
 
-    __slots__ = ("success", "message", "degraded")
+    __slots__ = ("success", "message", "degraded", "recovery_secs")
 
     def __init__(
         self,
         success: bool,
         message: str = "",
         degraded: bool = False,
+        recovery_secs: float = 0.0,
     ) -> None:
         self.success = success
         self.message = message
         self.degraded = degraded
+        self.recovery_secs = recovery_secs
 
     def __repr__(self) -> str:
         return (
             f"RecoveryResult(success={self.success}, "
-            f"degraded={self.degraded}, message={self.message!r})"
+            f"degraded={self.degraded}, recovery_secs={self.recovery_secs:.6f}, "
+            f"message={self.message!r})"
         )
 
 
@@ -66,7 +85,12 @@ class RecoveryLayer(abc.ABC):
 
     @abc.abstractmethod
     async def recover(
-        self, event: TelemetryEvent, tier: BlastRadius, epoch: int
+        self,
+        event: TelemetryEvent,
+        tier: BlastRadius,
+        epoch: int,
+        *,
+        min_valid_epoch: int | None = None,
     ) -> RecoveryResult:
         """
         Attempt recovery for the given event at the given tier.

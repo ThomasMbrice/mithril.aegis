@@ -44,6 +44,10 @@ coverage.xml
 *.swo
 *~
 
+*.md
+!README.md
+logs.out
+
 # macOS
 .DS_Store
 .AppleDouble
@@ -56,3 +60,8 @@ coverage.xml
 # Distribution / packaging
 MANIFEST
 pip-wheel-metadata/
+
+# realbench (real-cluster harness) run outputs — generated, not source
+logs/*.out
+logs/*.err
+realbench_runs/

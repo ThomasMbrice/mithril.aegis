@@ -12,6 +12,7 @@ Public API (§2, §4 of ui.md):
     aegis.init(...)          — T0: install transparent interception hooks
     aegis.status()           — T2: active hooks, epoch, KPI summary
     aegis.explain()          — T2: what AEGIS did for the last fault
+    aegis.dashboard(fmt=...) — T2: per-tier fault breakdown + $/GPU-hr KPI report
     aegis.disable()          — T2: kill switch, full passive mode
     aegis.checkpoint         — T2: explicit checkpoint save/restore
     aegis.transport          — T2: explicit transport / fast-path control
@@ -31,6 +32,7 @@ from aegis import _state
 from aegis import checkpoint  # noqa: F401 — re-export for `from aegis import checkpoint`
 from aegis import transport   # noqa: F401 — re-export for `from aegis import transport`
 from aegis import policy      # noqa: F401 — re-export for `aegis.policy.set(...)`
+from aegis import dashboard as _dashboard
 from aegis.config import load_policy
 from aegis.hooks import HookRegistry, VALID_HOOKS
 from aegis.policy import dsl as _policy_dsl
@@ -202,6 +204,32 @@ def explain() -> dict:
         "message": last.result.message if last.result else "",
         "observe_only": _state.mode == "observe_only",
     }
+
+
+def dashboard(fmt: str = "text") -> str | dict:
+    """
+    Operator dashboard (§4 Layer E4) — per-tier fault breakdown and the
+    live $/GPU-hr-saved KPI summary, in one call.
+
+    Args:
+        fmt: ``"text"`` (default) — a rendered ASCII report, ready to print.
+             ``"json"`` — the same data as a plain, JSON-serialisable dict.
+
+    Raises:
+        RuntimeError: if ``aegis.init()`` has not been called.
+        ValueError: if ``fmt`` is not ``"text"`` or ``"json"``.
+    """
+    _require_init()
+    rt = _state.runtime
+    assert rt is not None  # narrowing
+
+    report = _dashboard.build_report(rt)
+
+    if fmt == "json":
+        return report
+    if fmt == "text":
+        return _dashboard.render_text(report)
+    raise ValueError(f"Unknown fmt {fmt!r}. Valid: 'text', 'json'")
 
 
 def disable() -> None:

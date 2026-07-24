@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from ..classifier.classifier import FailureClassifier
 from ..consensus.urc import UnifiedRecoveryConsensus
 from ..epoch.service import FaultEpochService
+from ..kpi import KPIMeter
 from ..layers.base import RecoveryLayer, RecoveryResult
 from ..policy.dsl import OperatorPolicy
 from ..telemetry.bus import UnifiedTelemetryPlane
@@ -69,12 +70,14 @@ class EscalationPolicyEngine:
         consensus: UnifiedRecoveryConsensus,
         policy: OperatorPolicy,
         layers: list[RecoveryLayer],
+        kpi: KPIMeter | None = None,
     ) -> None:
         self._utp = utp
         self._classifier = classifier
         self._epochs = epoch_service
         self._consensus = consensus
         self._policy = policy
+        self._kpi = kpi
 
         # Build tier → layer map.  Layers declare which tiers they handle.
         self._tier_to_layer: dict[BlastRadius, RecoveryLayer] = {}
@@ -220,8 +223,26 @@ class EscalationPolicyEngine:
                         record.escalated = True
                     record.final_tier = tier
 
-                    result = await layer.recover(record.event, tier, record.epoch)
+                    min_valid_epoch = self._urc_gate(record, tier)
+                    result = await layer.recover(
+                        record.event, tier, record.epoch,
+                        min_valid_epoch=min_valid_epoch,
+                    )
                     if result.success:
+                        # This rank's logical slot has now committed state
+                        # at this epoch — real cross-layer input for the
+                        # next fault's URC reduction (§3.2).
+                        self._consensus.report_epoch(record.event.rank, record.epoch)
+                        if self._kpi is not None:
+                            # §4 Layer E3: record real measured recovery_secs,
+                            # not a canned constant (test_suite.md §4.5.4:
+                            # "measured, not modeled").
+                            self._kpi.record(
+                                epoch=record.epoch,
+                                tier=tier,
+                                recovery_time_secs=result.recovery_secs,
+                                gpu_count=self._policy.gpu_count,
+                            )
                         return result
 
                     logger.warning(
@@ -249,6 +270,25 @@ class EscalationPolicyEngine:
                 f"at epoch {record.epoch}"
             ),
         )
+
+    def _urc_gate(self, record: FaultRecord, tier: BlastRadius) -> int | None:
+        """
+        Compute the URC-derived ``min_valid_epoch`` for a storage-tier
+        restore (§3.2).  Only storage tiers (B2-B4) consult consensus —
+        transport/compute recoveries don't restore checkpointed state, so
+        there's nothing to gate.
+
+        Returns None (no constraint) if URC has no surviving-rank data to
+        reduce over yet — absence of consensus data must never itself
+        block recovery (§5 transparency promise #5: fail-safe, not
+        fail-active).
+        """
+        if tier < BlastRadius.B2:
+            return None
+
+        active_ranks = [r for r in self._consensus.all_ranks() if r != record.event.rank]
+        decision = self._consensus.agree(active_ranks, record.epoch)
+        return decision.min_valid_epoch if decision.agreed else None
 
     # ------------------------------------------------------------------
     # Audit

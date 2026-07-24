@@ -11,6 +11,18 @@ across all GPUs in the job.
 The KPI number that "sells the product":
   total_dollars_saved = Σ (baseline_time_secs - recovery_time_secs) / 3600
                         × gpu_count × $/GPU/hr
+
+As of Phase 1 (design.md §8.1), ``policy/engine.py`` calls ``record()``
+automatically after every successful recovery, using each layer's real
+*measured* ``recovery_secs`` (test_suite.md §4.5.4: "measured, not
+modeled") — not a canned per-tier constant. On this dev machine (no GPU
+cluster) those measurements are real CPU/MPS-proxy timings, not real
+hardware recovery durations, so ``aegis.status()["kpi"]`` numbers here are
+honestly tiny/near-instant rather than representative of production
+recovery cost. ``bench/`` uses a separate, explicitly target-based cost
+model (``bench/sim/cost_model.py``) for ST-3 trace-level $/GPU-hr
+projection — see that module's docstring for why the two shouldn't be
+conflated.
 """
 
 from __future__ import annotations
