@@ -45,6 +45,7 @@ coverage.xml
 *~
 
 *.md
+!README.md
 logs.out
 
 # macOS
