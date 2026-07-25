@@ -9,8 +9,12 @@ description = "Adaptive, Escalating, Graded Infrastructure Survivability — bla
 requires-python = ">=3.11"
 dependencies = ["pyyaml>=6.0", "numpy>=1.26,<2", "torch>=2.2", "transformers>=4.40"]
 
-[project.scripts]
-aegis = "aegis.cli:main"
+# AEGIS ships as an in-process library. `aegis/cli.py` remains as an
+# experimental torchrun drop-in but is intentionally NOT exposed as a console
+# script yet — the thin wrapper adds no fault-tolerance on its own (your
+# training script must still call `aegis.init()`), so shipping it as a command
+# would over-promise. Re-add a `[project.scripts]` entry once the CLI actually
+# injects `aegis.init()` around the launch.
 
 [project.optional-dependencies]
 dev = [
