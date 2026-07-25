@@ -4,6 +4,60 @@ Blast-radius-aware fault-tolerance runtime for LLM training & serving.
 Composes R²CCL (transport), MeCeFO (compute), and TierCheck (storage) under a
 unified controller.
 
+AEGIS is used **as an in-process library**: you `import aegis` and call
+`aegis.init()` inside your training entrypoint. There is no daemon and no
+separate CLI to run — recovery happens transparently on the native training
+path once the interception hooks are installed.
+
+## Installation
+
+Requires Python 3.11+. Install from source:
+
+```bash
+git clone <repo-url> aegis && cd aegis
+python3 -m venv .venv && source .venv/bin/activate
+pip install .            # or:  pip install -e .   for a live checkout
+```
+
+This pulls in `pyyaml`, `numpy`, `torch`, and `transformers`. CUDA is used
+automatically if available, falling back to MPS/CPU otherwise. For the test
+and development extras, use `pip install -e ".[dev]"`.
+
+## Quickstart (library)
+
+Call `aegis.init()` **before** `dist.init_process_group()` — it installs the
+transparent interception hooks. It never silently no-ops: if a required hook
+can't be installed it raises `AegisInitError`.
+
+```python
+import aegis
+
+# Install fault-tolerance interception. Must run before the process group.
+aegis.init()                       # active mode (classify + recover)
+# aegis.init(mode="observe_only")  # shadow mode: log what it *would* do
+
+# ... your normal distributed training loop, unchanged ...
+
+# Introspection (§4 / ui.md):
+aegis.status()             # active hooks, current epoch, KPI summary
+aegis.explain()            # what AEGIS did for the most recent fault
+print(aegis.dashboard())   # per-tier fault breakdown + $/GPU-hr-saved report
+aegis.dashboard(fmt="json")
+
+# Live policy tuning and the kill switch:
+aegis.policy.set("economics.policy", "correctness_first")
+aegis.disable()            # go fully passive; training continues natively
+```
+
+Policy defaults are loaded from `aegis.yaml` in the working directory; pass a
+different `policy_path=` or a pre-built `OperatorPolicy` via `policy=` to
+`init()`.
+
+For the full library guide — every public call, operating modes, policy
+configuration, and the CLI roadmap — see [`lib.md`](lib.md).
+
+## Repository layout
+
 ```
 aegis/
 
@@ -72,3 +126,6 @@ Requires Python 3.11+.
    ```bash
    pytest --collect-only -q | tail -1
    ```
+
+
+CI/CD Hosted on Google Cloud
