@@ -175,6 +175,15 @@ def main() -> None:
     else:
         device = torch.device("cpu")
 
+    dims = TINY_MODEL_DIMS if args.tiny else REAL_MODEL_DIMS
+
+    # Fail fast with an actionable message if the GPU is already dirty (e.g.
+    # orphaned processes from a previous crashed launch still pinning memory —
+    # see logs.out) rather than OOM-looping at model.to(device). Runs before
+    # rendezvous, so pair with `srun --kill-on-bad-exit=1` to bring the other
+    # ranks down instead of leaving them hung in init_process_group.
+    _preflight_gpu_check(device, dims, rank)
+
     # Generous timeout for rendezvous + (for a real 7B model) model
     # construction + FSDP wrap — these are one-time collectives that can
     # legitimately take much longer than a mid-training hang should be
@@ -186,61 +195,113 @@ def main() -> None:
         timeout=timedelta(seconds=args.setup_timeout_secs),
     )
 
-    # Own PID, for chaos_inject.real_injector to target this rank for SIGKILL.
-    (log_dir / f"pid_rank{rank}.txt").write_text(str(os.getpid()))
-
-    dims = TINY_MODEL_DIMS if args.tiny else REAL_MODEL_DIMS
-    model = _build_model(dims, args.seq_len, device, world_size)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
-
-    from torch.distributed.distributed_c10d import _set_pg_timeout
-    _set_pg_timeout(timedelta(seconds=args.collective_timeout_secs))
-
-    if world_size > 1 and device.type == "cuda":
-        parallelism = "DP(FSDP)"
-    elif world_size > 1:
-        parallelism = "DP(DDP)-local-smoke-test-only"
-    else:
-        parallelism = "single-process (no wrapping)"
-
-    if rank == 0:
-        manifest = {
-            "aegis_enabled": args.aegis_enabled,
-            "parallelism": parallelism,
-            "world_size": world_size,
-            "batch_size": args.batch_size,
-            "seq_len": args.seq_len,
-            "seed": args.seed,
-            "collective_timeout_secs": args.collective_timeout_secs,
-            "heartbeat_timeout_secs": args.heartbeat_timeout_secs,
-            "tiny_debug_run": args.tiny,
-            "model_dims": dims,
-        }
-        (log_dir / "run_manifest.json").write_text(json.dumps(manifest, indent=2))
-
-    step_log = StepLogWriter(log_dir / "step_log.jsonl") if rank == 0 else None
-    heartbeat = HeartbeatWriter(log_dir / f"heartbeat_rank{rank}.json")
-
-    _train_loop(
-        model=model,
-        optimizer=optimizer,
-        args=args,
-        device=device,
-        vocab_size=dims["vocab_size"],
-        rank=rank,
-        log_dir=log_dir,
-        step_log=step_log,
-        heartbeat=heartbeat,
-    )
-
-    if args.aegis_enabled and sensor is not None:
-        import asyncio
-        asyncio.run_coroutine_threadsafe(sensor.stop(), aegis_loop).result(timeout=5.0)
-
+    # Everything after rendezvous is wrapped so that ANY failure (notably an
+    # OOM in _build_model, which happens before _train_loop's own try/except)
+    # still tears the process group and CUDA context down. A crash that skips
+    # teardown is exactly what leaves memory-pinning orphans for the next
+    # retry to trip over (see logs.out).
     try:
-        dist.destroy_process_group()
-    except Exception:
-        pass  # process group may already be broken by a fault — best-effort teardown
+        # Own PID, for chaos_inject.real_injector to target this rank for SIGKILL.
+        (log_dir / f"pid_rank{rank}.txt").write_text(str(os.getpid()))
+
+        model = _build_model(dims, args.seq_len, device, world_size)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+
+        from torch.distributed.distributed_c10d import _set_pg_timeout
+        _set_pg_timeout(timedelta(seconds=args.collective_timeout_secs))
+
+        if world_size > 1 and device.type == "cuda":
+            parallelism = "DP(FSDP)"
+        elif world_size > 1:
+            parallelism = "DP(DDP)-local-smoke-test-only"
+        else:
+            parallelism = "single-process (no wrapping)"
+
+        if rank == 0:
+            manifest = {
+                "aegis_enabled": args.aegis_enabled,
+                "parallelism": parallelism,
+                "world_size": world_size,
+                "batch_size": args.batch_size,
+                "seq_len": args.seq_len,
+                "seed": args.seed,
+                "collective_timeout_secs": args.collective_timeout_secs,
+                "heartbeat_timeout_secs": args.heartbeat_timeout_secs,
+                "tiny_debug_run": args.tiny,
+                "model_dims": dims,
+            }
+            (log_dir / "run_manifest.json").write_text(json.dumps(manifest, indent=2))
+
+        step_log = StepLogWriter(log_dir / "step_log.jsonl") if rank == 0 else None
+        heartbeat = HeartbeatWriter(log_dir / f"heartbeat_rank{rank}.json")
+
+        _train_loop(
+            model=model,
+            optimizer=optimizer,
+            args=args,
+            device=device,
+            vocab_size=dims["vocab_size"],
+            rank=rank,
+            log_dir=log_dir,
+            step_log=step_log,
+            heartbeat=heartbeat,
+        )
+    finally:
+        if args.aegis_enabled and sensor is not None:
+            try:
+                import asyncio
+                asyncio.run_coroutine_threadsafe(sensor.stop(), aegis_loop).result(timeout=5.0)
+            except Exception:
+                pass  # never let sensor teardown mask the original failure
+        try:
+            dist.destroy_process_group()
+        except Exception:
+            pass  # process group may already be broken by a fault — best-effort teardown
+        if torch.cuda.is_available():
+            # Release this rank's CUDA context so a crashed launch doesn't
+            # leave the GPU pinned for the next retry.
+            torch.cuda.empty_cache()
+
+
+def _estimate_param_bytes(dims: dict, bytes_per_param: int = 4) -> int:
+    """Rough footprint of the LLaMA model these dims describe. Used only by the
+    preflight GPU check to turn a bare OOM into an actionable message — an
+    over- or under-estimate of a few percent doesn't change the verdict when a
+    dirty GPU has tens of GiB missing."""
+    h = dims["hidden_size"]
+    layers = dims["num_hidden_layers"]
+    inter = dims["intermediate_size"]
+    vocab = dims["vocab_size"]
+    per_layer = 4 * h * h + 3 * h * inter  # attn (q,k,v,o) + MLP (gate,up,down)
+    embed_and_head = 2 * vocab * h          # input embedding + (untied) lm_head
+    return (embed_and_head + layers * per_layer) * bytes_per_param
+
+
+def _preflight_gpu_check(device: torch.device, dims: dict, rank: int) -> None:
+    """Abort early, with a message that names the likely cause, when the target
+    GPU isn't clean enough to build the model.
+
+    Guards the exact failure captured in logs.out: orphaned processes from a
+    previous crashed launch stayed resident and pinned ~62 GiB per 80 GiB A100,
+    so every retry OOM'd identically at ``model.to(device)`` — with a bare
+    ``torch.OutOfMemoryError`` that never hinted the card was already full. This
+    check makes the real problem (and the fix) legible instead."""
+    if device.type != "cuda":
+        return
+    free, total = torch.cuda.mem_get_info(device)
+    needed = int(_estimate_param_bytes(dims) * 1.1)  # +10% headroom for the H2D copy
+    if free < needed:
+        gib = 1024 ** 3
+        raise RuntimeError(
+            f"[rank{rank}] GPU {device.index} preflight failed: {free / gib:.2f} GiB "
+            f"free of {total / gib:.2f} GiB, but building this model needs "
+            f"~{needed / gib:.2f} GiB. Something else already holds this GPU — most "
+            f"likely orphaned processes from a previous crashed launch (see logs.out). "
+            f"Clear the node before retrying rather than OOM-looping: `scancel` the job "
+            f"so Slurm's cgroup/epilog cleanup reaps the orphans, then resubmit; or run "
+            f"an overlapping cleanup step on the node "
+            f"(`srun --jobid=$SLURM_JOB_ID --overlap -w <node> nvidia-smi`)."
+        )
 
 
 def _build_model(dims: dict, seq_len: int, device: torch.device, world_size: int):

@@ -79,6 +79,60 @@ def read_rank_pid(pid_dir: str | Path, rank: int) -> int:
     return int(path.read_text().strip())
 
 
+def _pid_alive(pid: int) -> bool:
+    """Signal-0 liveness probe: does a process with this pid still exist?"""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists but owned by someone else — still "alive"
+    return True
+
+
+def _rank_liveness(pid_dir: str | Path) -> bool | None:
+    """Tri-state view of the training job the injector is watching.
+
+    Returns ``True`` if at least one rank process is still alive, ``False`` if
+    every rank's pid file exists but all those processes have exited, and
+    ``None`` if liveness can't be determined yet (no pid files written, or one
+    caught mid-write). The ``None`` case matters at startup: the injector must
+    not mistake "pids not yet written" for "training died" and exit early.
+    """
+    pid_files = list(Path(pid_dir).glob("pid_rank*.txt"))
+    if not pid_files:
+        return None
+    for pf in pid_files:
+        try:
+            pid = int(pf.read_text().strip())
+        except (ValueError, OSError):
+            return None  # racing a rank still writing its pid file — unknown
+        if _pid_alive(pid):
+            return True
+    return False
+
+
+def _record_undelivered(pending: list[TraceEvent], out_path: str | Path, current_step: int) -> None:
+    """Record every still-pending fault as unfired because training halted.
+
+    Without this the injector would spin in its poll loop forever once the
+    training job dies before reaching a trace step — an orphaned process that
+    also hangs the parent harness's ``injector_proc.wait()``.
+    """
+    for event in pending:
+        append_jsonl(out_path, {
+            "wall_clock": time.time(),
+            "step": current_step,
+            "fault_fired": False,
+            "fault_signal": event.fault,
+            "target_rank": event.target_rank,
+            "reason": (
+                f"training halted before trace step {event.step} "
+                "(all rank processes exited) — fault not delivered"
+            ),
+        })
+
+
 class B0RealInjector:
     """
     Real NIC-down/up injection for B0 — present for future dual-NIC
@@ -176,6 +230,18 @@ def run(trace_path: str | Path, step_log_path: str | Path, pid_dir: str | Path, 
         pending = [e for e in pending if e not in fired_this_pass]
 
         if pending:
+            # Bail out if training has clearly died before reaching the
+            # remaining trace steps: every rank's pid file exists but all those
+            # processes have exited, so the step log can never advance to fire
+            # them. Record the misses and stop, rather than polling forever as
+            # an orphan (which also hangs the parent's injector_proc.wait()).
+            if _rank_liveness(pid_dir) is False:
+                logger.error(
+                    "[real_injector] all rank processes exited before reaching %d pending "
+                    "trace step(s); exiting without delivering them", len(pending),
+                )
+                _record_undelivered(pending, out_path, current_step)
+                break
             time.sleep(POLL_INTERVAL_SECS)
 
 

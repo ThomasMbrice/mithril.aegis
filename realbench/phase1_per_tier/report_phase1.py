@@ -127,6 +127,36 @@ def launch_rank_processes(run_dir: Path, aegis_enabled: bool, args, master_port:
     return procs
 
 
+def _terminate_all(procs: list[subprocess.Popen], *, grace_secs: float = 5.0) -> None:
+    """Best-effort teardown of spawned children: SIGTERM, brief grace, then SIGKILL.
+
+    This module deliberately runs its ranks without a torchrun/elastic parent
+    (see module docstring), so nothing else reaps them — a leaked rank process
+    keeps its GPU pinned and makes the next condition's run OOM on a dirty GPU,
+    the exact failure this harness exists to measure. Every exit path from
+    run_condition therefore funnels through here.
+    """
+    alive = [p for p in procs if p is not None and p.poll() is None]
+    for p in alive:
+        try:
+            p.terminate()
+        except ProcessLookupError:
+            pass
+    deadline = time.monotonic() + grace_secs
+    for p in alive:
+        try:
+            p.wait(timeout=max(0.0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            try:
+                p.kill()
+            except ProcessLookupError:
+                pass
+            try:
+                p.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                pass  # unreapable — best effort; SLURM cgroup cleanup is the backstop
+
+
 def run_condition(condition: str, out: Path, trace_path: Path, args) -> Path:
     run_dir = out / condition
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -136,50 +166,77 @@ def run_condition(condition: str, out: Path, trace_path: Path, args) -> Path:
           f"processes (master_port={master_port})", flush=True)
     rank_procs = launch_rank_processes(run_dir, condition == "aegis", args, master_port)
 
-    # Wait for the training job to actually start writing step_log.jsonl and
-    # pid_rank*.txt before starting the injector, which needs both.
-    deadline = time.monotonic() + args.setup_timeout_secs
-    step_log_path = run_dir / "step_log.jsonl"
-    while time.monotonic() < deadline and not step_log_path.exists():
-        time.sleep(1.0)
-        if all(p.poll() is not None for p in rank_procs):
-            sys.exit(f"[report_phase1] {condition}: all ranks exited before writing "
-                      f"step_log.jsonl — check {run_dir}/rank*.log")
-
-    injector_cmd = [
-        sys.executable, "-m", "chaos_inject.real_injector",
-        "--trace", str(trace_path), "--step-log", str(step_log_path),
-        "--pid-dir", str(run_dir), "--out", str(run_dir / "chaos_log.jsonl"),
-    ]
-    injector_proc = subprocess.Popen(
-        injector_cmd, stdout=open(run_dir / "injector.log", "w"), stderr=subprocess.STDOUT
-    )
-
     stop_file = run_dir / "GPU_SAMPLER_STOP"
-    sampler_cmd = [
-        sys.executable, "-m", "realbench.collector.gpu_sampler",
-        "--out", str(run_dir / "gpu_log.jsonl"), "--stop-file", str(stop_file),
-        "--interval-secs", "1.0",
-    ]
-    sampler_proc = subprocess.Popen(
-        sampler_cmd, stdout=open(run_dir / "sampler.log", "w"), stderr=subprocess.STDOUT
-    )
+    injector_proc: subprocess.Popen | None = None
+    sampler_proc: subprocess.Popen | None = None
 
-    train_timeout = args.setup_timeout_secs + args.collective_timeout_secs + 300.0
-    deadline = time.monotonic() + train_timeout
-    for proc in rank_procs:
-        remaining = max(0.0, deadline - time.monotonic())
+    try:
+        # Wait for the training job to actually start writing step_log.jsonl and
+        # pid_rank*.txt before starting the injector, which needs both.
+        deadline = time.monotonic() + args.setup_timeout_secs
+        step_log_path = run_dir / "step_log.jsonl"
+        while time.monotonic() < deadline and not step_log_path.exists():
+            time.sleep(1.0)
+            if all(p.poll() is not None for p in rank_procs):
+                sys.exit(f"[report_phase1] {condition}: all ranks exited before writing "
+                          f"step_log.jsonl — check {run_dir}/rank*.log")
+
+        injector_cmd = [
+            sys.executable, "-m", "chaos_inject.real_injector",
+            "--trace", str(trace_path), "--step-log", str(step_log_path),
+            "--pid-dir", str(run_dir), "--out", str(run_dir / "chaos_log.jsonl"),
+        ]
+        with open(run_dir / "injector.log", "w") as injector_log:
+            injector_proc = subprocess.Popen(
+                injector_cmd, stdout=injector_log, stderr=subprocess.STDOUT
+            )
+
+        sampler_cmd = [
+            sys.executable, "-m", "realbench.collector.gpu_sampler",
+            "--out", str(run_dir / "gpu_log.jsonl"), "--stop-file", str(stop_file),
+            "--interval-secs", "1.0", "--parent-pid", str(os.getpid()),
+        ]
+        with open(run_dir / "sampler.log", "w") as sampler_log:
+            sampler_proc = subprocess.Popen(
+                sampler_cmd, stdout=sampler_log, stderr=subprocess.STDOUT
+            )
+
+        train_timeout = args.setup_timeout_secs + args.collective_timeout_secs + 300.0
+        deadline = time.monotonic() + train_timeout
+        for proc in rank_procs:
+            remaining = max(0.0, deadline - time.monotonic())
+            try:
+                proc.wait(timeout=remaining)
+            except subprocess.TimeoutExpired:
+                print(f"[report_phase1] {condition}: a rank did not exit within {train_timeout}s "
+                      "— killing it (this should not happen; the collective-timeout halt logic "
+                      "should have exited cleanly).", file=sys.stderr)
+                proc.kill()
+
+        # Training is over — tell the sampler to stop, then let the injector
+        # drain. Both waits are guarded: a hang here must not skip the sampler
+        # stop-signal or leak either process (the finally is the backstop).
+        stop_file.touch()
         try:
-            proc.wait(timeout=remaining)
+            injector_proc.wait(timeout=60)
         except subprocess.TimeoutExpired:
-            print(f"[report_phase1] {condition}: a rank did not exit within {train_timeout}s "
-                  "— killing it (this should not happen; the collective-timeout halt logic "
-                  "should have exited cleanly).", file=sys.stderr)
-            proc.kill()
-
-    injector_proc.wait(timeout=60)
-    stop_file.touch()
-    sampler_proc.wait(timeout=30)
+            print(f"[report_phase1] {condition}: injector did not exit within 60s — "
+                  "will be terminated.", file=sys.stderr)
+        try:
+            sampler_proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            print(f"[report_phase1] {condition}: gpu sampler did not exit within 30s — "
+                  "will be terminated.", file=sys.stderr)
+    finally:
+        # Guarantee no orphaned GPU-holding children survive this condition,
+        # however we got here (normal exit, sys.exit, timeout, or an unexpected
+        # exception). Touch the stop-file first so the sampler can exit on its
+        # own before we fall back to signalling it.
+        try:
+            stop_file.touch()
+        except OSError:
+            pass
+        _terminate_all([*rank_procs, injector_proc, sampler_proc])
 
     return run_dir
 
