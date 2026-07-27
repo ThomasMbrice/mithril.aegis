@@ -45,7 +45,8 @@ def _pyproject() -> dict:
 
 def test_no_console_script_in_installed_metadata():
     """The installed distribution must expose no console_scripts."""
-    eps = importlib_metadata.distribution("aegis").entry_points
+    dist_name = _pyproject()["project"]["name"]
+    eps = importlib_metadata.distribution(dist_name).entry_points
     console_scripts = sorted(e.name for e in eps if e.group == "console_scripts")
     assert console_scripts == [], (
         "AEGIS ships library-only; unexpected console scripts in installed "
