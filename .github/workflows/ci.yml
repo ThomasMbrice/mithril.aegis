@@ -90,3 +90,30 @@ jobs:
           name: dist
           path: dist/*
           retention-days: 14
+
+  # Publish the built sdist + wheel to PyPI via twine. Runs only on pushes to
+  # main, and only after both the test and package jobs pass, so tagged/merged
+  # commits are the only thing that can reach the index. Reuses the exact
+  # artifact the `package` job already built and validated.
+  publish:
+    needs: [test, package]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Upload to PyPI with twine
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          python -m pip install --upgrade pip twine
+          twine upload --non-interactive dist/*

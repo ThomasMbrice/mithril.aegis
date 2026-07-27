@@ -3,7 +3,10 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "aegis"
+# Distribution name on PyPI. The import package remains `aegis`
+# (`import aegis`); only the pip/PyPI name is namespaced to avoid the
+# already-taken bare `aegis` distribution.
+name = "mithril_aegis"
 version = "0.1.0"
 description = "Adaptive, Escalating, Graded Infrastructure Survivability — blast-radius-aware fault-tolerance runtime for LLM training & serving"
 requires-python = ">=3.11"
